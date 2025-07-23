@@ -12,48 +12,19 @@ The plugin has been tested on Linux and is expected to work also on macOS and on
 
 * [ActivityWatch](https://activitywatch.net)
 * curl
-* bash version >= 4.0
+* bash version >= 3.2
 
-#### macOS / Mac OSX
-
-Current MacOS versions might still being shipped with bash versions < 4.0 and date commands that are incompatible with the `monitor-session-activity.sh` script, which initially has been developped for linux. Thanks to @snipem and @joshmedeski you can find below copied instructions in issue #2 on how to upgrade bash, install `gdate` as replacement for `date` and to modify the script accordingly:
-
-1. Install latest bash
-
-~~~bash
-brew install bash
-~~~
-
-Replace the top line of monitor-session-activity.sh with the update bash (run which bash to get the path).
-
-~~~diff
--#!/bin/bash
-+#!/opt/homebrew/bin/bash
-~~~
-
-Install coreutils to get gdate on my machine.
-
-
-~~~bash
-brew install coreutils
-~~~
-
-Replace the PAYLOAD variable with gdate.
-
-~~~diff
--PAYLOAD="{\"timestamp\":\"$(date -Is)\",\"duration\":0,\"data\":$DATA}"
-+PAYLOAD="{\"timestamp\":\"$(gdate -Is)\",\"duration\":0,\"data\":$DATA}"
-~~~
-
+> [!TIP]
+> The plugin is now compatible with MacOS.
 
 ### Preparation
 
 1. Install **ActivityWatch** as described in the [getting-started](https://docs.activitywatch.net/en/latest/getting-started.html#installation) guide.
-2. Install the [Tmux Plugin Manager](https://github.com/tmux-plugins/tpm) (tpm) 
+2. Install the [Tmux Plugin Manager](https://github.com/tmux-plugins/tpm) (tpm)
 
-### Install the aw-watcher-tmux plugin 
+### Install the aw-watcher-tmux plugin
 
-1. Add below line to your `~/.tmux.conf` 
+1. Add below line to your `~/.tmux.conf`
 
 ~~~
 set -g @plugin 'akohlbecker/aw-watcher-tmux'
@@ -63,7 +34,7 @@ set -g @plugin 'akohlbecker/aw-watcher-tmux'
 
 ## Usage
 
-Once the aw-watcher-tmux plugin is installed it monitors for user activity in all tmux sessions. Any activity is reported to the ActivityWatch REST API at [http://localhost:5600/api/](http://localhost:5600/api/). 
+Once the aw-watcher-tmux plugin is installed it monitors for user activity in all tmux sessions. Any activity is reported to the ActivityWatch REST API at [http://localhost:5600/api/](http://localhost:5600/api/).
 
 aw-watcher-tmux creates a new bucket. The existence of this bucket can be checked with [http://localhost:5600/api/0/buckets/aw-watcher-tmux](http://localhost:5600/api/0/buckets/aw-watcher-tmux).
 
