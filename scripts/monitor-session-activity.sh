@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+
 get_tmux_option() {
-  local option_value=$(tmux show-option -gqv "$1");
-  echo ${option_value:-$2}
+    local option_value
+    option_value=$(tmux show-option -gqv "$1")
+    echo "${option_value:-$2}"
 }
 
 ######
@@ -25,81 +28,83 @@ API_URL="http://$HOST:$PORT/api"
 #  * https://github.com/tmux/tmux/wiki/Advanced-Use#user-content-getting-information
 #
 
-
 ### FUNCTIONS
 
 DEBUG=0
-TMP_FILE=$(mktemp)
-echo $TMP_FILE
 
 init_bucket() {
-    HTTP_CODE=$(curl -X GET "${API_URL}/0/buckets/$BUCKET_ID" -H "accept: application/json" -s -o /dev/null -w %{http_code})
-    if (( $HTTP_CODE == 404 )) # not found
-    then
-        JSON="{\"client\":\"$BUCKET_ID\",\"type\":\"tmux.sessions\",\"hostname\":\"$(hostname)\"}"
-        HTTP_CODE=$(curl -X POST "${API_URL}/0/buckets/$BUCKET_ID" -H "accept: application/json" -H "Content-Type: application/json" -d "$JSON"  -s -o /dev/null -w %{http_code})
-        if (( $HTTP_CODE != 200 ))
-        then
-            echo "ERROR creating bucket"
-            exit -1
+    local http_code
+    http_code=$(curl -X GET "${API_URL}/0/buckets/$BUCKET_ID" -H "accept: application/json" -s -o /dev/null -w "%{http_code}")
+
+    if [[ "$http_code" == "404" ]]; then
+        local json
+        json="{\"client\":\"$BUCKET_ID\",\"type\":\"tmux.sessions\",\"hostname\":\"$(hostname)\"}"
+        http_code=$(curl -X POST "${API_URL}/0/buckets/$BUCKET_ID" -H "accept: application/json" -H "Content-Type: application/json" -d "$json" -s -o /dev/null -w "%{http_code}")
+
+        if [[ "$http_code" != "200" ]]; then
+            echo "ERROR: Failed to create bucket (HTTP $http_code)" >&2
+            exit 1
         fi
     fi
 }
 
 log_to_bucket() {
-    sess=$1
-    DATA=$(tmux display -t $sess -p "{\"title\":\"#{session_name}\",\"session_name\":\"#{session_name}\",\"window_name\":\"#{window_name}\",\"pane_title\":\"#{pane_title}\",\"pane_current_command\":\"#{pane_current_command}\",\"pane_current_path\":\"#{pane_current_path}\"}");
-    PAYLOAD="{\"timestamp\":\"$(date -Is)\",\"duration\":0,\"data\":$DATA}"
-    echo "$PAYLOAD"
-    HTTP_CODE=$(curl -X POST "${API_URL}/0/buckets/$BUCKET_ID/heartbeat?pulsetime=$PULSETIME" -H "accept: application/json" -H "Content-Type: application/json" -d "$PAYLOAD" -s -o $TMP_FILE -w %{http_code})
-    if (( $HTTP_CODE != 200 )); then
-        echo "Request failed"
-        cat $TMP_FILE
+    local sess="$1"
+
+    if ! tmux has-session -t "$sess" 2>/dev/null; then
+        echo "WARNING: Session '$sess' no longer exists" >&2
+        return 1
     fi
 
-    if [[ "$DEBUG" -eq "1" ]]; then
-        cat $TMP_FILE
+    local data
+    data=$(tmux display -t "$sess" -p "{\"title\":\"#{session_name}\",\"session_name\":\"#{session_name}\",\"window_name\":\"#{window_name}\",\"pane_title\":\"#{pane_title}\",\"pane_current_command\":\"#{pane_current_command}\",\"pane_current_path\":\"#{pane_current_path}\"}")
+
+    local payload
+    payload="{\"timestamp\":\"$(date -Iseconds)\",\"duration\":0,\"data\":$data}"
+
+    [[ "$DEBUG" -eq 1 ]] && echo "Payload: $payload" >&2
+
+    local http_code
+    http_code=$(curl -X POST "${API_URL}/0/buckets/$BUCKET_ID/heartbeat?pulsetime=$PULSETIME" -H "accept: application/json" -H "Content-Type: application/json" -d "$payload" -s -o /dev/null -w "%{http_code}")
+
+    if [[ "$http_code" != "200" ]]; then
+        echo "WARNING: Failed to log session '$sess' (HTTP $http_code)" >&2
+        return 1
     fi
 }
 
-
 ### MAIN POLL LOOP
-
-declare -A act_last
-declare -A act_current
 
 init_bucket
 
-while [ true ]
-do
-    #clear
-	sessions=$(tmux list-sessions | awk '{print $1}')
-	if (( $? != 0 )); then
-        echo "tmux list-sessions ERROR: $?"
+while true; do
+    if ! tmux list-sessions &>/dev/null; then
+        echo "INFO: No tmux server running, exiting" >&2
+        exit 0
     fi
-	if (( $? == 0 )); then
-        LAST_IFS=$IFS
-        IFS='
-'
-        for sess in ${sessions}; do
-            act_time=$(tmux display -t $sess -p '#{session_activity}')
-            if [[ ! -v "act_last[$sess]" ]];  then
-                act_last[$sess]='0'
-            fi
-            if (( $act_time > ${act_last[$sess]} )); then
-                # echo "###> "$sess' '$(date -Iseconds)'    '$act_time' '$act_last[$sess] ##  >> tmux-sess-act.log
-                log_to_bucket $sess
-            fi
-            act_current[$sess]=$act_time
-        done
-        IFS=$LAST_IFS
-        # copy arrays
-        unset R
-        declare -A act_last
-        for sess in "${!act_current[@]}"; do
-            act_last[$sess]=${act_current[$sess]}
-        done
-	fi
 
-	sleep $POLL_INTERVAL
+    sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || echo "")
+
+    if [[ -n "$sessions" ]]; then
+        while IFS= read -r sess; do
+            [[ -z "$sess" ]] && continue
+
+            if act_time=$(tmux display -t "$sess" -p '#{session_activity}' 2>/dev/null); then
+                last_activity_file="/tmp/aw-tmux-${sess//[^a-zA-Z0-9]/_}"
+                last_act=0
+
+                if [[ -f "$last_activity_file" ]]; then
+                    last_act=$(cat "$last_activity_file" 2>/dev/null || echo "0")
+                fi
+
+                if [[ "$act_time" -gt "$last_act" ]]; then
+                    log_to_bucket "$sess"
+                fi
+
+                echo "$act_time" > "$last_activity_file"
+            fi
+        done <<< "$sessions"
+    fi
+
+    sleep "$POLL_INTERVAL"
 done
